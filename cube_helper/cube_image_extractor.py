@@ -101,8 +101,8 @@ class CubeCobraImageExtractor:
         for card in cards:
             image_url = None
             
-            # 様々な場所から画像URLを探す
-            if 'imgUrl' in card:
+            # 様々な場所から画像URLを探す（空文字列チェックを追加）
+            if 'imgUrl' in card and card['imgUrl'].strip():
                 image_url = card['imgUrl']
             elif 'details' in card:
                 details = card['details']

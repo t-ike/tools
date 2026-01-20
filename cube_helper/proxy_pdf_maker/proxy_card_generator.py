@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""
+プロキシカード PDF 生成ツール
+GitHubリポジトリの仕組みを参考にした独立版
+"""
+
+import os
+import sys
+import json
+import requests
+from PIL import Image, ImageDraw, ImageFont
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from io import BytesIO
+import urllib.request
+import time
+import ssl
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def mm_to_points(mm):
+    """ミリメートルをポイントに変換（1mm = 2.834645669 points）"""
+    return mm * 2.834645669
+
+class ProxyCardPDFGenerator:
+    def __init__(self):
+        # カードサイズ（要求された88mm x 63mm）
+        self.card_width = 63   # mm
+        self.card_height = 88  # mm
+        
+        # A4サイズ設定
+        self.page_width = 210  # mm
+        self.page_height = 297 # mm
+        
+        # 余白とギャップの最適化（幅のオーバーフローを解決）
+        self.page_margin = 0   # mm (10mm → 8mm に縮小)
+        self.card_gap = 0    # mm (2mm → 1.5mm に縮小)
+        
+        # 印刷可能エリア計算
+        self.printable_width = self.page_width - (self.page_margin * 2)
+        self.printable_height = self.page_height - (self.page_margin * 2)
+        
+        # 9枚配置計算（3列3行）
+        self.cols = 3
+        self.rows = 3
+        
+        # 実際の配置確認
+        total_cards_width = (self.card_width * self.cols) + (self.card_gap * (self.cols - 1))
+        total_cards_height = (self.card_height * self.rows) + (self.card_gap * (self.rows - 1))
+        
+        print(f"📏 カードサイズ: {self.card_width}mm x {self.card_height}mm")
+        print(f"📄 A4サイズ: {self.page_width}mm x {self.page_height}mm")
+        print(f"🎯 印刷エリア: {self.printable_width}mm x {self.printable_height}mm")
+        print(f"📐 9枚配置サイズ: {total_cards_width}mm x {total_cards_height}mm")
+        
+        # 配置可能かチェック
+        if total_cards_width > self.printable_width:
+            print(f"⚠️  幅が印刷エリアを超過: {total_cards_width}mm > {self.printable_width}mm")
+            # 自動調整
+            available_width_per_card = (self.printable_width - (self.card_gap * (self.cols - 1))) / self.cols
+            if available_width_per_card < self.card_width:
+                self.card_width = available_width_per_card
+                print(f"🔧 カード幅を自動調整: {self.card_width:.1f}mm")
+        if total_cards_height > self.printable_height:
+            print(f"⚠️  高さが印刷エリアを超過: {total_cards_height}mm > {self.printable_height}mm")
+            # 自動調整
+            available_height_per_card = (self.printable_height - (self.card_gap * (self.rows - 1))) / self.rows
+            if available_height_per_card < self.card_height:
+                self.card_height = available_height_per_card
+                print(f"🔧 カード高さを自動調整: {self.card_height:.1f}mm")
+        
+        # 再計算
+        total_cards_width = (self.card_width * self.cols) + (self.card_gap * (self.cols - 1))
+        total_cards_height = (self.card_height * self.rows) + (self.card_gap * (self.rows - 1))
+        
+        # 中央配置のための開始位置計算
+        self.start_x = self.page_margin + (self.printable_width - total_cards_width) / 2
+        self.start_y = self.page_margin + (self.printable_height - total_cards_height) / 2
+        
+        print(f"📍 開始位置: ({self.start_x:.1f}mm, {self.start_y:.1f}mm)")
+        
+    def download_image(self, url, timeout=30):
+        """画像URLから画像をダウンロード"""
+        try:
+            # SSL証明書の問題を回避
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as response:
+                image_data = response.read()
+                
+            # PILで画像を開く
+            image = Image.open(BytesIO(image_data))
+            
+            # RGBに変換（アルファチャンネルがあれば白背景で合成）
+            if image.mode in ('RGBA', 'LA'):
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                if image.mode == 'LA':
+                    image = image.convert('RGBA')
+                background.paste(image, mask=image.split()[-1])
+                image = background
+            elif image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            return image
+            
+        except Exception as e:
+            print(f"❌ 画像ダウンロード失敗 {url[:50]}...: {e}")
+            return None
+    
+    def resize_image_to_card(self, image, force_exact_size=True):
+        """画像をカードサイズに正確にリサイズ（枠を完全に埋める）"""
+        if not image:
+            return None
+            
+        # 目標サイズ（高解像度で処理）
+        target_width = int(self.card_width * 10)  # 1mm = 10 pixels at this resolution
+        target_height = int(self.card_height * 10)
+        
+        print(f"    🖼️  画像リサイズ: {image.width}x{image.height} → {target_width}x{target_height}px")
+        
+        if force_exact_size:
+            # 強制的に正確なサイズにリサイズ（アスペクト比は無視して枠を完全に埋める）
+            print(f"    🔧 強制リサイズモード: アスペクト比を無視してカード枠に完全フィット")
+            resized = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        else:
+            # アスペクト比計算
+            img_ratio = image.width / image.height
+            target_ratio = target_width / target_height
+            
+            if img_ratio > target_ratio:
+                # 横長画像：高さを基準にリサイズしてから幅をクロップ
+                new_height = target_height
+                new_width = int(target_height * img_ratio)
+                resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # 中央でクロップ
+                left = (new_width - target_width) // 2
+                resized = resized.crop((left, 0, left + target_width, target_height))
+            else:
+                # 縦長画像：幅を基準にリサイズしてから高さをクロップ
+                new_width = target_width
+                new_height = int(target_width / img_ratio)
+                resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # 中央でクロップ
+                top = (new_height - target_height) // 2
+                resized = resized.crop((0, top, target_width, top + target_height))
+        
+        # 最終確認：正確なサイズになっているかチェック
+        if resized.size != (target_width, target_height):
+            print(f"    ⚠️  サイズ不一致を検出、再調整実行")
+            # 強制的に正確なサイズにリサイズ（アスペクト比は無視）
+            resized = resized.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        
+        print(f"    ✅ 最終サイズ: {resized.width}x{resized.height}px")
+        return resized
+    
+    def download_images_batch(self, urls, force_exact_size=True):
+        """複数の画像を並列ダウンロード"""
+        images = []
+        
+        print(f"🔄 {len(urls)} 枚の画像をダウンロード中...")
+        
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            # ダウンロードタスクを送信
+            future_to_url = {
+                executor.submit(self.download_image, url): (i, url) 
+                for i, url in enumerate(urls)
+            }
+            
+            # 結果を順序通りに格納するためのリスト
+            results = [None] * len(urls)
+            
+            for future in as_completed(future_to_url):
+                index, url = future_to_url[future]
+                try:
+                    image = future.result()
+                    if image:
+                        resized_image = self.resize_image_to_card(image, force_exact_size)
+                        results[index] = resized_image
+                        print(f"  ✅ #{index+1}: {url[:50]}...")
+                    else:
+                        print(f"  ❌ #{index+1}: ダウンロード失敗")
+                        results[index] = None
+                except Exception as e:
+                    print(f"  ❌ #{index+1}: 処理エラー - {e}")
+                    results[index] = None
+        
+        return results
+    
+    def create_placeholder_image(self):
+        """プレースホルダー画像を作成"""
+        width = int(self.card_width * 10)
+        height = int(self.card_height * 10)
+        
+        image = Image.new('RGB', (width, height), (240, 240, 240))
+        draw = ImageDraw.Draw(image)
+        
+        # 枠線を描画
+        draw.rectangle([(0, 0), (width-1, height-1)], outline=(200, 200, 200), width=3)
+        
+        # "No Image"テキスト
+        try:
+            # システムフォントを試す
+            font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", size=24)
+        except:
+            try:
+                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size=24)
+            except:
+                font = ImageFont.load_default()
+        
+        text = "No Image"
+        
+        # テキストサイズ取得
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        # 中央に配置
+        x = (width - text_width) // 2
+        y = (height - text_height) // 2
+        
+        draw.text((x, y), text, fill=(150, 150, 150), font=font)
+        
+        return image
+    
+    def generate_pdf(self, image_batches, output_dir):
+        """画像バッチからPDFを生成"""
+        if not image_batches:
+            print("❌ 生成する画像がありません")
+            return []
+        
+        os.makedirs(output_dir, exist_ok=True)
+        generated_files = []
+        
+        for batch_num, images in enumerate(image_batches, 1):
+            print(f"\n📄 PDF {batch_num}/{len(image_batches)} 生成中...")
+            
+            # PDFファイル名
+            pdf_filename = f"proxy_cards_batch_{batch_num:02d}.pdf"
+            pdf_path = os.path.join(output_dir, pdf_filename)
+            
+            # ReportLabでPDF作成
+            c = canvas.Canvas(pdf_path, pagesize=A4)
+            
+            # 画像を配置
+            card_count = 0
+            print(f"  🎴 カード配置開始:")
+            print(f"    📐 配置エリア: {self.cols}列 × {self.rows}行")
+            
+            for row in range(self.rows):
+                for col in range(self.cols):
+                    if card_count < len(images) and images[card_count]:
+                        # カード位置計算（画像の左下角）
+                        x = self.start_x + col * (self.card_width + self.card_gap)
+                        y = self.page_height - (self.start_y + (row + 1) * self.card_height + row * self.card_gap)
+                        
+                        # カードの4つの角の座標を計算
+                        left = x
+                        right = x + self.card_width
+                        bottom = y
+                        top = y + self.card_height
+                        
+                        # 画像を一時ファイルとして保存してから配置
+                        temp_image_path = f"/tmp/temp_card_{batch_num}_{card_count}.jpg"
+                        images[card_count].save(temp_image_path, "JPEG", quality=95)
+                        
+                        # PDFに画像を配置（完全にカード枠を埋める）
+                        print(f"  🎴 カード #{card_count+1} (行{row+1}, 列{col+1}):")
+                        print(f"    📍 左下: ({left:.1f}mm, {bottom:.1f}mm)")
+                        print(f"    📍 右上: ({right:.1f}mm, {top:.1f}mm)")
+                        print(f"    📐 実サイズ: {self.card_width:.1f}mm × {self.card_height:.1f}mm")
+                        print(f"    🖼️  画像: {images[card_count].width}×{images[card_count].height}px")
+                        
+                        c.drawImage(
+                            temp_image_path,
+                            mm_to_points(x),
+                            mm_to_points(y),
+                            width=mm_to_points(self.card_width),
+                            height=mm_to_points(self.card_height)
+                        )
+                        
+                        # 一時ファイル削除
+                        try:
+                            os.remove(temp_image_path)
+                        except:
+                            pass
+                    
+                    card_count += 1
+                    if card_count >= 9:  # 9枚まで
+                        break
+                if card_count >= 9:
+                    break
+            
+            # カット線を追加
+            self.add_cut_lines(c)
+            
+            c.save()
+            
+            file_size = os.path.getsize(pdf_path)
+            print(f"  ✅ 保存完了: {pdf_filename} ({file_size:,} bytes)")
+            generated_files.append(pdf_path)
+        
+        return generated_files
+    
+    def add_cut_lines(self, canvas_obj):
+        """カット線を追加（画像配置と完全に一致）"""
+        canvas_obj.setStrokeColorRGB(0.4, 0.4, 0.4)  # 適度なグレー（見やすい）
+        canvas_obj.setLineWidth(0.4)  # 適度な太さ
+        canvas_obj.setDash([2, 2])  # 破線スタイル（切り取り線らしく）
+        
+        print(f"  📐 カット線生成中...")
+        print(f"    📏 カード配置: {self.cols}列 × {self.rows}行")
+        print(f"    📍 開始位置: ({self.start_x:.1f}mm, {self.start_y:.1f}mm)")
+        print(f"    📐 カードサイズ: {self.card_width:.1f}mm × {self.card_height:.1f}mm")
+        print(f"    📏 カード間隔: {self.card_gap:.1f}mm")
+        
+        # 縦線（各カードの左右の境界）
+        for col in range(self.cols + 1):
+            if col == 0:
+                # 左端の線
+                x = self.start_x
+            elif col == self.cols:
+                # 右端の線
+                x = self.start_x + (self.card_width * self.cols) + (self.card_gap * (self.cols - 1))
+            else:
+                # 中間の線（カード間の境界）
+                x = self.start_x + col * (self.card_width + self.card_gap)
+            
+            y1 = self.start_y
+            y2 = self.start_y + (self.card_height * self.rows) + (self.card_gap * (self.rows - 1))
+            
+            print(f"    ┃ 縦線 #{col+1}: x={x:.1f}mm, y={y1:.1f}mm-{y2:.1f}mm")
+            
+            canvas_obj.line(
+                mm_to_points(x),
+                mm_to_points(self.page_height - y1),
+                mm_to_points(x),
+                mm_to_points(self.page_height - y2)
+            )
+        
+        # 横線（各カードの上下の境界）
+        for row in range(self.rows + 1):
+            if row == 0:
+                # 上端の線
+                y = self.start_y
+            elif row == self.rows:
+                # 下端の線
+                y = self.start_y + (self.card_height * self.rows) + (self.card_gap * (self.rows - 1))
+            else:
+                # 中間の線（カード間の境界）
+                y = self.start_y + row * (self.card_height + self.card_gap)
+            
+            x1 = self.start_x
+            x2 = self.start_x + (self.card_width * self.cols) + (self.card_gap * (self.cols - 1))
+            
+            print(f"    ━ 横線 #{row+1}: y={y:.1f}mm, x={x1:.1f}mm-{x2:.1f}mm")
+            
+            canvas_obj.line(
+                mm_to_points(x1),
+                mm_to_points(self.page_height - y),
+                mm_to_points(x2),
+                mm_to_points(self.page_height - y)
+            )
+        
+        print(f"  ✅ カット線生成完了")
+
+def main():
+    print("🎴 プロキシカード PDF 生成ツール")
+    print("=" * 50)
+    
+    # 画像フィットモードの選択
+    print("\n🖼️ 画像のフィット方法を選択してください：")
+    print("1. 完全フィット（推奨）: 枠を完全に埋める（アスペクト比無視）")
+    print("2. アスペクト比保持: 画像比率を保ってクロップ")
+    
+    fit_choice = input("選択 (1-2, デフォルト=1): ").strip()
+    force_exact_size = fit_choice != "2"
+    
+    if force_exact_size:
+        print("✅ 完全フィットモード: カードの枠を100%埋めます")
+    else:
+        print("✅ アスペクト比保持モード: 画像の縦横比を維持します")
+    
+    # URLリストの取得方法選択
+    print("\n📋 URLリストの入力方法を選択してください：")
+    print("1. ファイルから読み込み")
+    print("2. 手動入力")
+    print("3. テストデータを使用")
+    
+    choice = input("選択 (1-3): ").strip()
+    
+    urls = []
+    
+    if choice == "1":
+        filename = input("URLリストファイルのパス: ").strip()
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                lines = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+                urls = [line for line in lines if line.startswith('http')]
+            print(f"✅ {len(urls)} 個のURLを読み込みました")
+        except Exception as e:
+            print(f"❌ ファイル読み込みエラー: {e}")
+            return
+            
+    elif choice == "2":
+        print("URLを1行ずつ入力してください（空行で終了）:")
+        while True:
+            url = input(f"URL {len(urls)+1}: ").strip()
+            if not url:
+                break
+            urls.append(url)
+                
+    elif choice == "3":
+        # テストデータ
+        urls = [
+            "https://cards.scryfall.io/large/front/3/3/3398df92-8b6f-4966-b97c-528eeabac678.jpg",
+            "https://cards.scryfall.io/large/front/f/f/ff5c3be1-85c4-4d5d-966d-c7c6b4e827d6.jpg",
+            "https://cards.scryfall.io/large/front/7/7/77ba077b-87f3-4037-81df-d7a7a6a27ef4.jpg",
+            "https://cards.scryfall.io/large/front/4/4/44ee85f6-a30a-4c52-b1b7-71725d1739d5.jpg",
+            "https://cards.scryfall.io/large/front/a/a/aae6fb12-b252-453b-bca7-1ea2a0d6c8dc.jpg"
+        ]
+        print(f"✅ テスト用 {len(urls)} 個のURLを使用")
+    
+    if not urls:
+        print("❌ URLが指定されていません")
+        return
+    
+    # 出力ディレクトリ
+    output_dir = os.path.expanduser("~/Downloads/proxy_cards")
+    print(f"\n📁 PDF出力先: {output_dir}")
+    
+    # PDF生成器を作成
+    generator = ProxyCardPDFGenerator()
+    
+    # URLを9個ずつのバッチに分割
+    batches = [urls[i:i+9] for i in range(0, len(urls), 9)]
+    print(f"\n📦 {len(batches)} 個のPDFバッチを作成予定")
+    
+    # 各バッチを処理
+    all_generated_files = []
+    
+    for batch_num, batch_urls in enumerate(batches, 1):
+        print(f"\n🔄 バッチ {batch_num}/{len(batches)} 処理中... ({len(batch_urls)} 枚)")
+        
+        # 画像をダウンロードしてリサイズ
+        images = generator.download_images_batch(batch_urls, force_exact_size)
+        
+        # 失敗した画像をプレースホルダーで置換
+        for i in range(len(images)):
+            if images[i] is None:
+                print(f"  🔄 #{i+1} プレースホルダー画像を生成中...")
+                images[i] = generator.create_placeholder_image()
+        
+        # PDF生成
+        generated_files = generator.generate_pdf([images], output_dir)
+        all_generated_files.extend(generated_files)
+        
+        print(f"✅ バッチ {batch_num} 完了")
+    
+    print(f"\n🎉 全処理完了!")
+    print(f"📄 生成されたPDFファイル: {len(all_generated_files)} 個")
+    
+    for pdf_file in all_generated_files:
+        file_size = os.path.getsize(pdf_file)
+        print(f"  📄 {os.path.basename(pdf_file)} ({file_size:,} bytes)")
+    
+    print(f"\n📁 出力ディレクトリ: {output_dir}")
+    
+    # Finderで開く（macOS）
+    try:
+        os.system(f"open '{output_dir}'")
+        print("📂 Finderでフォルダを開きました")
+    except:
+        pass
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,41 @@
+# プロキシカード用画像URLリスト
+# Magic: The Gathering カード例
+
+# Lightning Bolt
+https://cards.scryfall.io/large/front/f/f/ff5c3be1-85c4-4d5d-966d-c7c6b4e827d6.jpg
+
+# Black Lotus
+https://cards.scryfall.io/large/front/b/d/bd8fa327-dd41-4737-8f19-2cf5eb1f7cdd.jpg
+
+# Ancestral Recall
+https://cards.scryfall.io/large/front/2/3/2398892d-28e9-4009-81ec-0d544af79d2b.jpg
+
+# Mox Ruby
+https://cards.scryfall.io/large/front/4/5/45fd6e91-df76-497f-b642-33dc3d5f6a5a.jpg
+
+# Time Walk  
+https://cards.scryfall.io/large/front/7/0/70901356-3266-4bd9-aacc-f06c27271de5.jpg
+
+# Sol Ring
+https://cards.scryfall.io/large/front/3/3/3398df92-8b6f-4966-b97c-528eeabac678.jpg
+
+# Birds of Paradise
+https://cards.scryfall.io/large/front/f/e/feefe9f0-24a6-461c-9ef1-86c5a6f33b83.jpg
+
+# Dark Ritual
+https://cards.scryfall.io/large/front/9/5/95f27eeb-6f14-4db3-adb9-9be5ed76b34b.jpg
+
+# Counterspell
+https://cards.scryfall.io/large/front/a/4/a457f404-ddf1-40fa-b0f0-23c8598533f4.jpg
+
+# Swords to Plowshares
+https://cards.scryfall.io/large/front/8/0/80f46ac5-6fd9-4ed3-9c8a-e9c2e5cd9da2.jpg
+
+# Giant Growth
+https://cards.scryfall.io/large/front/0/6/06ec9e8b-4bd8-4caf-a559-6514b7ab4ca4.jpg
+
+# Brainstorm
+https://cards.scryfall.io/large/front/4/8/48070245-1370-4cf1-be15-d4e8a8b92ba8.jpg
+
+# Path to Exile
+https://cards.scryfall.io/large/front/9/d/9d607a40-608a-44cd-b946-02636b5bea3f.jpg

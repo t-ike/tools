@@ -163,37 +163,35 @@ class ProxyCardPDFGenerator:
         return resized
     
     def download_images_batch(self, urls, force_exact_size=True):
-        """複数の画像を並列ダウンロード"""
+        """複数の画像を順次ダウンロード（レート制限対策で0.5秒間隔）"""
         images = []
         
-        print(f"🔄 {len(urls)} 枚の画像をダウンロード中...")
+        print(f"🔄 {len(urls)} 枚の画像をダウンロード中（0.5秒間隔）...")
         
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            # ダウンロードタスクを送信
-            future_to_url = {
-                executor.submit(self.download_image, url): (i, url) 
-                for i, url in enumerate(urls)
-            }
+        for i, url in enumerate(urls):
+            print(f"  🔄 #{i+1}/{len(urls)}: ダウンロード中...")
+            try:
+                # 画像をダウンロード
+                image = self.download_image(url)
+                
+                if image:
+                    resized_image = self.resize_image_to_card(image, force_exact_size)
+                    images.append(resized_image)
+                    print(f"  ✅ #{i+1}: {url[:50]}...")
+                else:
+                    print(f"  ❌ #{i+1}: ダウンロード失敗")
+                    images.append(None)
+                    
+            except Exception as e:
+                print(f"  ❌ #{i+1}: 処理エラー - {e}")
+                images.append(None)
             
-            # 結果を順序通りに格納するためのリスト
-            results = [None] * len(urls)
-            
-            for future in as_completed(future_to_url):
-                index, url = future_to_url[future]
-                try:
-                    image = future.result()
-                    if image:
-                        resized_image = self.resize_image_to_card(image, force_exact_size)
-                        results[index] = resized_image
-                        print(f"  ✅ #{index+1}: {url[:50]}...")
-                    else:
-                        print(f"  ❌ #{index+1}: ダウンロード失敗")
-                        results[index] = None
-                except Exception as e:
-                    print(f"  ❌ #{index+1}: 処理エラー - {e}")
-                    results[index] = None
+            # レート制限対策：0.5秒待機（最後のアイテム以外）
+            if i < len(urls) - 1:
+                time.sleep(0.5)
+                print(f"    ⏱️  0.5秒待機...")
         
-        return results
+        return images
     
     def create_placeholder_image(self):
         """プレースホルダー画像を作成"""

@@ -311,66 +311,79 @@ class ProxyCardPDFGenerator:
         return generated_files
     
     def add_cut_lines(self, canvas_obj):
-        """カット線を追加（画像配置と完全に一致）"""
-        canvas_obj.setStrokeColorRGB(0.4, 0.4, 0.4)  # 適度なグレー（見やすい）
-        canvas_obj.setLineWidth(0.4)  # 適度な太さ
-        canvas_obj.setDash([2, 2])  # 破線スタイル（切り取り線らしく）
+        """カット線を追加（9枚の画像の外に延長する形で表示）"""
+        canvas_obj.setStrokeColorRGB(0, 0, 0)  # 適度なグレー（見やすい）
+        canvas_obj.setLineWidth(0.05)  # 適度な太さ
+        canvas_obj.setDash([1, 2])  # 破線スタイル（切り取り線らしく）
         
-        print(f"  📐 カット線生成中...")
+        print(f"  📐 カット線生成中（外側延長モード）...")
         print(f"    📏 カード配置: {self.cols}列 × {self.rows}行")
         print(f"    📍 開始位置: ({self.start_x:.1f}mm, {self.start_y:.1f}mm)")
         print(f"    📐 カードサイズ: {self.card_width:.1f}mm × {self.card_height:.1f}mm")
         print(f"    📏 カード間隔: {self.card_gap:.1f}mm")
         
-        # 縦線（各カードの左右の境界）
+        # カード配置エリア全体の座標を計算
+        cards_left = self.start_x
+        cards_right = self.start_x + (self.card_width * self.cols) + (self.card_gap * (self.cols - 1))
+        cards_top = self.start_y
+        cards_bottom = self.start_y + (self.card_height * self.rows) + (self.card_gap * (self.rows - 1))
+        
+        # 延長する長さ（5mm延長）
+        extension_length = 8.0  # mm
+        
+        # 縦線（各カードの左右の境界を外に延長）
         for col in range(self.cols + 1):
             if col == 0:
                 # 左端の線
-                x = self.start_x
+                x = cards_left
             elif col == self.cols:
                 # 右端の線
-                x = self.start_x + (self.card_width * self.cols) + (self.card_gap * (self.cols - 1))
+                x = cards_right
             else:
                 # 中間の線（カード間の境界）
                 x = self.start_x + col * (self.card_width + self.card_gap)
             
-            y1 = self.start_y
-            y2 = self.start_y + (self.card_height * self.rows) + (self.card_gap * (self.rows - 1))
+            # 上方向に延長
+            y1_extended = max(0, cards_top - extension_length)
+            # 下方向に延長
+            y2_extended = min(self.page_height, cards_bottom + extension_length)
             
-            print(f"    ┃ 縦線 #{col+1}: x={x:.1f}mm, y={y1:.1f}mm-{y2:.1f}mm")
+            print(f"    ┃ 縦線 #{col+1}: x={x:.1f}mm, y={y1_extended:.1f}mm-{y2_extended:.1f}mm (延長)")
             
             canvas_obj.line(
                 mm_to_points(x),
-                mm_to_points(self.page_height - y1),
+                mm_to_points(self.page_height - y1_extended),
                 mm_to_points(x),
-                mm_to_points(self.page_height - y2)
+                mm_to_points(self.page_height - y2_extended)
             )
         
-        # 横線（各カードの上下の境界）
+        # 横線（各カードの上下の境界を外に延長）
         for row in range(self.rows + 1):
             if row == 0:
                 # 上端の線
-                y = self.start_y
+                y = cards_top
             elif row == self.rows:
                 # 下端の線
-                y = self.start_y + (self.card_height * self.rows) + (self.card_gap * (self.rows - 1))
+                y = cards_bottom
             else:
                 # 中間の線（カード間の境界）
                 y = self.start_y + row * (self.card_height + self.card_gap)
             
-            x1 = self.start_x
-            x2 = self.start_x + (self.card_width * self.cols) + (self.card_gap * (self.cols - 1))
+            # 左方向に延長
+            x1_extended = max(0, cards_left - extension_length)
+            # 右方向に延長
+            x2_extended = min(self.page_width, cards_right + extension_length)
             
-            print(f"    ━ 横線 #{row+1}: y={y:.1f}mm, x={x1:.1f}mm-{x2:.1f}mm")
+            print(f"    ━ 横線 #{row+1}: y={y:.1f}mm, x={x1_extended:.1f}mm-{x2_extended:.1f}mm (延長)")
             
             canvas_obj.line(
-                mm_to_points(x1),
+                mm_to_points(x1_extended),
                 mm_to_points(self.page_height - y),
-                mm_to_points(x2),
+                mm_to_points(x2_extended),
                 mm_to_points(self.page_height - y)
             )
         
-        print(f"  ✅ カット線生成完了")
+        print(f"  ✅ カット線生成完了（外側延長: {extension_length}mm）")
 
 def main():
     print("🎴 プロキシカード PDF 生成ツール")
@@ -421,11 +434,15 @@ def main():
     elif choice == "3":
         # テストデータ
         urls = [
-            "https://cards.scryfall.io/large/front/3/3/3398df92-8b6f-4966-b97c-528eeabac678.jpg",
-            "https://cards.scryfall.io/large/front/f/f/ff5c3be1-85c4-4d5d-966d-c7c6b4e827d6.jpg",
-            "https://cards.scryfall.io/large/front/7/7/77ba077b-87f3-4037-81df-d7a7a6a27ef4.jpg",
-            "https://cards.scryfall.io/large/front/4/4/44ee85f6-a30a-4c52-b1b7-71725d1739d5.jpg",
-            "https://cards.scryfall.io/large/front/a/a/aae6fb12-b252-453b-bca7-1ea2a0d6c8dc.jpg"
+            "https://cards.scryfall.io/large/front/3/3/3398df92-8b6f-4966-b97c-528eeabac678.jpg?1645912000",
+            "https://cards.scryfall.io/large/front/4/c/4cebd725-a5d1-4dc9-959f-92ff17d11be9.jpg?1730229457",
+            "https://cards.scryfall.io/large/front/5/0/502f514f-574e-4868-8103-b9fd673228d9.jpg?1730229373",
+            "https://cards.scryfall.io/large/front/a/2/a260c1e2-8fc3-4745-bc17-97fcdf5242c3.jpg?1562933316",
+            "https://cards.scryfall.io/large/front/b/8/b8d8f428-9a6d-40a1-aa86-e8d37a048dcf.jpg?1677135450",
+            "https://cards.scryfall.io/large/front/b/9/b962ca61-ac60-459d-bbdf-19cc99b66c66.jpg?1730229354",
+            "https://cards.scryfall.io/large/front/d/c/dce700d1-67f8-4232-9009-2753d662b1a5.jpg?1562548543",
+            "https://cards.scryfall.io/large/front/f/c/fc30e04f-2afa-4e3d-a704-dfda7f393a90.jpg?1730229450",
+            "https://cards.scryfall.io/normal/front/4/1/412ceddd-2b9a-4551-a6bf-ae2830a2010a.jpg?1559591578",
         ]
         print(f"✅ テスト用 {len(urls)} 個のURLを使用")
     

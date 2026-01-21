@@ -79,40 +79,50 @@ class ProxyCardPDFGenerator:
         
         print(f"📍 開始位置: ({self.start_x:.1f}mm, {self.start_y:.1f}mm)")
         
-    def download_image(self, url, timeout=30):
-        """画像URLから画像をダウンロード"""
-        try:
-            # SSL証明書の問題を回避
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-            
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as response:
-                image_data = response.read()
+    def download_image(self, url, timeout=5, max_retries=2):
+        """画像URLから画像をダウンロード（リトライ機能付き）"""
+        for attempt in range(max_retries + 1):
+            try:
+                # SSL証明書の問題を回避
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
                 
-            # PILで画像を開く
-            image = Image.open(BytesIO(image_data))
-            
-            # RGBに変換（アルファチャンネルがあれば白背景で合成）
-            if image.mode in ('RGBA', 'LA'):
-                background = Image.new('RGB', image.size, (255, 255, 255))
-                if image.mode == 'LA':
-                    image = image.convert('RGBA')
-                background.paste(image, mask=image.split()[-1])
-                image = background
-            elif image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            return image
-            
-        except Exception as e:
-            print(f"❌ 画像ダウンロード失敗 {url[:50]}...: {e}")
-            return None
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=timeout, context=ssl_context) as response:
+                    image_data = response.read()
+                    
+                # PILで画像を開く
+                image = Image.open(BytesIO(image_data))
+                
+                # RGBに変換（アルファチャンネルがあれば白背景で合成）
+                if image.mode in ('RGBA', 'LA'):
+                    background = Image.new('RGB', image.size, (255, 255, 255))
+                    if image.mode == 'LA':
+                        image = image.convert('RGBA')
+                    background.paste(image, mask=image.split()[-1])
+                    image = background
+                elif image.mode != 'RGB':
+                    image = image.convert('RGB')
+                
+                # 成功した場合
+                if attempt > 0:
+                    print(f"    ✅ リトライ {attempt}/{max_retries} で成功")
+                return image
+                
+            except Exception as e:
+                if attempt < max_retries:
+                    print(f"    ⚠️  試行 {attempt + 1}/{max_retries + 1} 失敗: {e}")
+                    print(f"    🔄 {timeout}秒後にリトライします...")
+                    time.sleep(timeout)  # タイムアウト時間分待機
+                else:
+                    print(f"❌ 画像ダウンロード完全失敗 {url[:50]}...: {e}")
+                    print(f"❌ 最大リトライ回数 ({max_retries}) に達しました")
+                    return None
     
     def resize_image_to_card(self, image, force_exact_size=True):
         """画像をカードサイズに正確にリサイズ（枠を完全に埋める）"""
@@ -163,15 +173,15 @@ class ProxyCardPDFGenerator:
         return resized
     
     def download_images_batch(self, urls, force_exact_size=True):
-        """複数の画像を順次ダウンロード（レート制限対策で0.3秒間隔）"""
+        """複数の画像を順次ダウンロード（レート制限対策で0.3秒間隔、失敗時プログラム終了）"""
         images = []
         
-        print(f"🔄 {len(urls)} 枚の画像をダウンロード中（0.3秒間隔）...")
+        print(f"🔄 {len(urls)} 枚の画像をダウンロード中（0.3秒間隔、タイムアウト5秒、最大2回リトライ）...")
         
         for i, url in enumerate(urls):
             print(f"  🔄 #{i+1}/{len(urls)}: ダウンロード中...")
             try:
-                # 画像をダウンロード
+                # 画像をダウンロード（リトライ機能付き）
                 image = self.download_image(url)
                 
                 if image:
@@ -179,12 +189,14 @@ class ProxyCardPDFGenerator:
                     images.append(resized_image)
                     print(f"  ✅ #{i+1}: {url[:50]}...")
                 else:
-                    print(f"  ❌ #{i+1}: ダウンロード失敗")
-                    images.append(None)
+                    print(f"  ❌ #{i+1}: ダウンロード完全失敗")
+                    print(f"❌ プログラムを終了します")
+                    sys.exit(1)
                     
             except Exception as e:
                 print(f"  ❌ #{i+1}: 処理エラー - {e}")
-                images.append(None)
+                print(f"❌ プログラムを終了します")
+                sys.exit(1)
             
             # レート制限対策：0.3秒待機（最後のアイテム以外）
             if i < len(urls) - 1:

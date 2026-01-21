@@ -163,10 +163,10 @@ class ProxyCardPDFGenerator:
         return resized
     
     def download_images_batch(self, urls, force_exact_size=True):
-        """複数の画像を順次ダウンロード（レート制限対策で0.5秒間隔）"""
+        """複数の画像を順次ダウンロード（レート制限対策で0.3秒間隔）"""
         images = []
         
-        print(f"🔄 {len(urls)} 枚の画像をダウンロード中（0.5秒間隔）...")
+        print(f"🔄 {len(urls)} 枚の画像をダウンロード中（0.3秒間隔）...")
         
         for i, url in enumerate(urls):
             print(f"  🔄 #{i+1}/{len(urls)}: ダウンロード中...")
@@ -186,10 +186,10 @@ class ProxyCardPDFGenerator:
                 print(f"  ❌ #{i+1}: 処理エラー - {e}")
                 images.append(None)
             
-            # レート制限対策：0.5秒待機（最後のアイテム以外）
+            # レート制限対策：0.3秒待機（最後のアイテム以外）
             if i < len(urls) - 1:
-                time.sleep(0.5)
-                print(f"    ⏱️  0.5秒待機...")
+                time.sleep(0.3)
+                print(f"    ⏱️  0.3秒待機...")
         
         return images
     
@@ -229,29 +229,30 @@ class ProxyCardPDFGenerator:
         
         return image
     
-    def generate_pdf(self, image_batches, output_dir):
-        """画像バッチからPDFを生成"""
-        if not image_batches:
+    def generate_pdf(self, all_image_batches, output_dir):
+        """全ての画像バッチから単一のPDFを生成（複数ページ）"""
+        if not all_image_batches:
             print("❌ 生成する画像がありません")
             return []
         
         os.makedirs(output_dir, exist_ok=True)
-        generated_files = []
         
-        for batch_num, images in enumerate(image_batches, 1):
-            print(f"\n📄 PDF {batch_num}/{len(image_batches)} 生成中...")
-            
-            # PDFファイル名
-            pdf_filename = f"proxy_cards_batch_{batch_num:02d}.pdf"
-            pdf_path = os.path.join(output_dir, pdf_filename)
-            
-            # ReportLabでPDF作成
-            c = canvas.Canvas(pdf_path, pagesize=A4)
+        # 単一のPDFファイル名
+        pdf_filename = f"proxy_cards.pdf"
+        pdf_path = os.path.join(output_dir, pdf_filename)
+        
+        print(f"\n📄 PDF生成中... (総ページ数: {len(all_image_batches)})")
+        
+        # ReportLabでPDF作成
+        c = canvas.Canvas(pdf_path, pagesize=A4)
+        
+        for page_num, images in enumerate(all_image_batches, 1):
+            print(f"  📄 ページ {page_num}/{len(all_image_batches)} 生成中...")
             
             # 画像を配置
             card_count = 0
-            print(f"  🎴 カード配置開始:")
-            print(f"    📐 配置エリア: {self.cols}列 × {self.rows}行")
+            print(f"    🎴 カード配置開始:")
+            print(f"      📐 配置エリア: {self.cols}列 × {self.rows}行")
             
             for row in range(self.rows):
                 for col in range(self.cols):
@@ -260,22 +261,14 @@ class ProxyCardPDFGenerator:
                         x = self.start_x + col * (self.card_width + self.card_gap)
                         y = self.page_height - (self.start_y + (row + 1) * self.card_height + row * self.card_gap)
                         
-                        # カードの4つの角の座標を計算
-                        left = x
-                        right = x + self.card_width
-                        bottom = y
-                        top = y + self.card_height
-                        
                         # 画像を一時ファイルとして保存してから配置
-                        temp_image_path = f"/tmp/temp_card_{batch_num}_{card_count}.jpg"
+                        temp_image_path = f"/tmp/temp_card_{page_num}_{card_count}.jpg"
                         images[card_count].save(temp_image_path, "JPEG", quality=95)
                         
                         # PDFに画像を配置（完全にカード枠を埋める）
-                        print(f"  🎴 カード #{card_count+1} (行{row+1}, 列{col+1}):")
-                        print(f"    📍 左下: ({left:.1f}mm, {bottom:.1f}mm)")
-                        print(f"    📍 右上: ({right:.1f}mm, {top:.1f}mm)")
-                        print(f"    📐 実サイズ: {self.card_width:.1f}mm × {self.card_height:.1f}mm")
-                        print(f"    🖼️  画像: {images[card_count].width}×{images[card_count].height}px")
+                        print(f"    🎴 カード #{card_count+1} (行{row+1}, 列{col+1}):")
+                        print(f"      📍 位置: ({x:.1f}mm, {y:.1f}mm)")
+                        print(f"      📐 サイズ: {self.card_width:.1f}mm × {self.card_height:.1f}mm")
                         
                         c.drawImage(
                             temp_image_path,
@@ -300,13 +293,20 @@ class ProxyCardPDFGenerator:
             # カット線を追加
             self.add_cut_lines(c)
             
-            c.save()
-            
-            file_size = os.path.getsize(pdf_path)
-            print(f"  ✅ 保存完了: {pdf_filename} ({file_size:,} bytes)")
-            generated_files.append(pdf_path)
+            # 最後のページ以外は新しいページを追加
+            if page_num < len(all_image_batches):
+                c.showPage()
+                print(f"    ✅ ページ {page_num} 完了、次のページへ")
+            else:
+                print(f"    ✅ 最終ページ {page_num} 完了")
         
-        return generated_files
+        # PDFを保存
+        c.save()
+        
+        file_size = os.path.getsize(pdf_path)
+        print(f"  ✅ PDF保存完了: {pdf_filename} ({file_size:,} bytes)")
+        
+        return [pdf_path]
     
     def add_cut_lines(self, canvas_obj):
         """カット線を追加（9枚の画像の外に延長する形で表示）"""
@@ -457,11 +457,12 @@ def main():
     
     # URLを9個ずつのバッチに分割
     batches = [urls[i:i+9] for i in range(0, len(urls), 9)]
-    print(f"\n📦 {len(batches)} 個のPDFバッチを作成予定")
+    print(f"\n📦 {len(batches)} ページのPDFを作成予定")
     
-    # 各バッチを処理
-    all_generated_files = []
+    # 全ての画像バッチを格納するリスト
+    all_image_batches = []
     
+    # 各バッチを処理して画像を取得
     for batch_num, batch_urls in enumerate(batches, 1):
         print(f"\n🔄 バッチ {batch_num}/{len(batches)} 処理中... ({len(batch_urls)} 枚)")
         
@@ -474,18 +475,19 @@ def main():
                 print(f"  🔄 #{i+1} プレースホルダー画像を生成中...")
                 images[i] = generator.create_placeholder_image()
         
-        # PDF生成
-        generated_files = generator.generate_pdf([images], output_dir)
-        all_generated_files.extend(generated_files)
-        
+        all_image_batches.append(images)
         print(f"✅ バッチ {batch_num} 完了")
     
-    print(f"\n🎉 全処理完了!")
-    print(f"📄 生成されたPDFファイル: {len(all_generated_files)} 個")
+    # 単一のPDFを生成（全バッチを含む）
+    print(f"\n📄 単一PDF生成中...")
+    generated_files = generator.generate_pdf(all_image_batches, output_dir)
     
-    for pdf_file in all_generated_files:
+    print(f"\n🎉 全処理完了!")
+    print(f"📄 生成されたPDFファイル: {len(generated_files)} 個")
+    
+    for pdf_file in generated_files:
         file_size = os.path.getsize(pdf_file)
-        print(f"  📄 {os.path.basename(pdf_file)} ({file_size:,} bytes)")
+        print(f"  📄 {os.path.basename(pdf_file)} ({file_size:,} bytes, {len(batches)} ページ)")
     
     print(f"\n📁 出力ディレクトリ: {output_dir}")
     

@@ -99,7 +99,14 @@ class CubeCobraAPIExtractor:
         
         return False
 
-    def extract_cards_by_color(self, cube_data: Dict[str, Any], target_colors: List[str]) -> List[Dict[str, Any]]:
+    def has_proxyed_tag(self, card: Dict[str, Any]) -> bool:
+        """カードがProxyedタグを持っているかチェック"""
+        tags = card.get('tags', [])
+        if isinstance(tags, list):
+            return 'Proxyed' in tags
+        return False
+
+    def extract_cards_by_color(self, cube_data: Dict[str, Any], target_colors: List[str], exclude_proxyed: bool = False) -> List[Dict[str, Any]]:
         """指定された色カテゴリ（複数可）のカードを抽出"""
         
         if 'cards' not in cube_data or 'mainboard' not in cube_data['cards']:
@@ -109,6 +116,16 @@ class CubeCobraAPIExtractor:
         all_cards = cube_data['cards']['mainboard']
         matched_cards = []
         unclassified_cards = []
+        proxyed_cards = []
+        
+        # Proxyedタグ除外が有効な場合の前処理
+        if exclude_proxyed:
+            original_count = len(all_cards)
+            all_cards = [card for card in all_cards if not self.has_proxyed_tag(card)]
+            proxyed_count = original_count - len(all_cards)
+            if proxyed_count > 0:
+                print(f"\n🚫 Proxyedタグ除外: {proxyed_count}枚のカードを除外")
+                print(f"📊 除外後の総カード数: {len(all_cards)}枚")
         
         # 全カード指定の場合
         if 'all' in [color.lower() for color in target_colors]:
@@ -248,7 +265,7 @@ class CubeCobraAPIExtractor:
         except Exception as e:
             print(f"ファイル保存エラー: {e}", file=sys.stderr)
 
-    def get_card_images(self, cube_url: str, target_colors: List[str], output_file: str = None):
+    def get_card_images(self, cube_url: str, target_colors: List[str], output_file: str = None, exclude_proxyed: bool = False):
         """メイン処理：指定された色カテゴリ（複数可）の画像URLを取得"""
         
         try:
@@ -270,7 +287,7 @@ class CubeCobraAPIExtractor:
             print(f"総カード数: {total_cards}")
             
             # 指定色のカードを抽出
-            cards = self.extract_cards_by_color(cube_data, target_colors)
+            cards = self.extract_cards_by_color(cube_data, target_colors, exclude_proxyed)
             
             if not cards:
                 colors_str = ', '.join(target_colors)
@@ -298,7 +315,8 @@ def main():
         epilog='例:\n'
                '  %(prog)s "https://www.cubecobra.com/cube/list/48c4bc57-d95c-4226-9c4d-05f140bed38c" --color "White" -o white_cards.txt\n'
                '  %(prog)s "https://cubecobra.com/cube/list/your-cube-id" --color "White,Blue" -o white_blue_cards.txt\n'
-               '  %(prog)s "https://cubecobra.com/cube/list/your-cube-id" --color "all" -o all_cards.txt',
+               '  %(prog)s "https://cubecobra.com/cube/list/your-cube-id" --color "all" -o all_cards.txt\n'
+               '  %(prog)s "https://cubecobra.com/cube/list/your-cube-id" --color "White" --exclude-proxyed -o white_no_proxy.txt',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument('url', help='Cube CobraのキューブリストURL')
@@ -306,6 +324,8 @@ def main():
                        help='取得する色カテゴリ (例: White, Blue, Black, Red, Green, Colorless, Multicolored, Lands, "White,Blue", "all")')
     parser.add_argument('-o', '--output',
                        help='出力ファイル名 (デフォルト: 自動生成)')
+    parser.add_argument('--exclude-proxyed', action='store_true',
+                       help='Proxyedタグが付いているカードを除外する')
 
     args = parser.parse_args()
 
@@ -329,11 +349,13 @@ def main():
     print(f"URL: {args.url}")
     print(f"色: {', '.join(target_colors)}")
     print(f"出力ファイル: output/{args.output}")
+    if args.exclude_proxyed:
+        print("🚫 Proxyedタグ除外: 有効")
     print("--------------------------------------------------")
 
     # 抽出処理を実行
     extractor = CubeCobraAPIExtractor()
-    image_urls = extractor.get_card_images(args.url, target_colors, args.output)
+    image_urls = extractor.get_card_images(args.url, target_colors, args.output, args.exclude_proxyed)
 
     if image_urls:
         print(f"\n🎉 処理完了！{len(image_urls)}個の画像URLを取得しました。")

@@ -156,33 +156,68 @@ class CubeCobraAPIExtractor:
         return matched_cards
 
     def extract_image_urls(self, cards: List[Dict[str, Any]]) -> List[str]:
-        """カードリストから画像URLを抽出"""
+        """カードリストから画像URLを抽出（両面カード対応）"""
         
         image_urls = []
+        double_faced_cards = []
         
         for card in cards:
-            image_url = None
+            card_name = card.get('name', 'Unknown')
+            if 'details' in card:
+                card_name = card['details'].get('name', card_name)
             
-            # 複数の画像URLフィールドをチェック（優先順位付き）
+            # 表面の画像URL取得
+            front_image_url = None
             if 'imgUrl' in card and card['imgUrl']:
-                image_url = card['imgUrl']
+                front_image_url = card['imgUrl']
             elif 'details' in card:
                 details = card['details']
                 if 'image_normal' in details and details['image_normal']:
-                    image_url = details['image_normal']
+                    front_image_url = details['image_normal']
                 elif 'image_small' in details and details['image_small']:
-                    image_url = details['image_small']
+                    front_image_url = details['image_small']
                 elif 'art_crop' in details and details['art_crop']:
-                    image_url = details['art_crop']
+                    front_image_url = details['art_crop']
                 elif 'image_uris' in details:
                     image_uris = details['image_uris']
                     if isinstance(image_uris, dict):
-                        image_url = image_uris.get('normal', image_uris.get('large', image_uris.get('small')))
+                        front_image_url = image_uris.get('normal', image_uris.get('large', image_uris.get('small')))
                     elif isinstance(image_uris, str):
-                        image_url = image_uris
+                        front_image_url = image_uris
             
-            if image_url:
-                image_urls.append(image_url)
+            if front_image_url:
+                image_urls.append(front_image_url)
+            
+            # 裏面の画像URL取得（両面カードの場合）
+            back_image_url = None
+            is_double_faced = False
+            
+            # imgBackUrl フィールドをチェック
+            if 'imgBackUrl' in card and card['imgBackUrl']:
+                back_image_url = card['imgBackUrl']
+                is_double_faced = True
+            # details.image_flip フィールドをチェック
+            elif 'details' in card and card['details'].get('image_flip'):
+                back_image_url = card['details']['image_flip']
+                is_double_faced = True
+            # layout が transform の場合もチェック
+            elif 'details' in card and card['details'].get('layout') == 'transform':
+                is_double_faced = True
+                # image_flip がない場合は、scryfall の back URL を推測
+                if 'image_normal' in card['details']:
+                    normal_url = card['details']['image_normal']
+                    # front を back に置換
+                    back_image_url = normal_url.replace('/front/', '/back/')
+            
+            if back_image_url and is_double_faced:
+                image_urls.append(back_image_url)
+                double_faced_cards.append(card_name)
+        
+        # 両面カードの情報を表示
+        if double_faced_cards:
+            print(f"\n🔄 両面カード ({len(double_faced_cards)}枚):")
+            for i, name in enumerate(double_faced_cards, 1):
+                print(f"  {i}: {name}")
         
         return image_urls
 

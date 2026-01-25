@@ -44,6 +44,10 @@ class ProxyCardPDFGenerator:
         self.cols = 3
         self.rows = 3
         
+        # PDFサイズ制限設定
+        self.max_pdf_size = 30 * 1024 * 1024  # 30MB
+        self.pages_per_split = 12  # 分割単位（ページ数）
+        
         # 実際の配置確認
         total_cards_width = (self.card_width * self.cols) + (self.card_gap * (self.cols - 1))
         total_cards_height = (self.card_height * self.rows) + (self.card_gap * (self.rows - 1))
@@ -241,25 +245,61 @@ class ProxyCardPDFGenerator:
         
         return image
     
+    def split_batches_by_size(self, all_image_batches):
+        """画像バッチを固定ページ数で分割"""
+        total_pages = len(all_image_batches)
+        
+        print(f"\n📊 PDF分割設定:")
+        print(f"  総ページ数: {total_pages}")
+        print(f"  分割単位: {self.pages_per_split}ページ")
+        
+        # バッチを分割
+        split_batches = []
+        for i in range(0, len(all_image_batches), self.pages_per_split):
+            chunk = all_image_batches[i:i + self.pages_per_split]
+            split_batches.append(chunk)
+            print(f"    📋 分割 {len(split_batches)}: {len(chunk)}ページ")
+        
+        return split_batches
+    
     def generate_pdf(self, all_image_batches, output_dir):
-        """全ての画像バッチから単一のPDFを生成（複数ページ）"""
+        """全ての画像バッチからPDFを生成（固定ページ数で分割）"""
         if not all_image_batches:
             print("❌ 生成する画像がありません")
             return []
         
         os.makedirs(output_dir, exist_ok=True)
         
-        # 単一のPDFファイル名
-        pdf_filename = f"proxy_cards.pdf"
-        pdf_path = os.path.join(output_dir, pdf_filename)
+        # 固定ページ数で分割
+        split_batches = self.split_batches_by_size(all_image_batches)
         
-        print(f"\n📄 PDF生成中... (総ページ数: {len(all_image_batches)})")
+        generated_pdfs = []
         
+        for batch_index, batch_pages in enumerate(split_batches, 1):
+            # PDFファイル名を決定
+            if len(split_batches) == 1:
+                pdf_filename = f"proxy_cards.pdf"
+            else:
+                pdf_filename = f"proxy_cards_part{batch_index:02d}.pdf"
+            
+            pdf_path = os.path.join(output_dir, pdf_filename)
+            
+            print(f"\n📄 PDF生成中 ({batch_index}/{len(split_batches)}): {pdf_filename}")
+            print(f"  ページ数: {len(batch_pages)}")
+            
+            # 個別PDFを生成
+            self.generate_single_pdf(batch_pages, pdf_path, batch_index, len(split_batches))
+            generated_pdfs.append(pdf_path)
+        
+        return generated_pdfs
+    
+    def generate_single_pdf(self, image_batches, pdf_path, part_num=1, total_parts=1):
+        """単一のPDFファイルを生成"""
         # ReportLabでPDF作成
         c = canvas.Canvas(pdf_path, pagesize=A4)
         
-        for page_num, images in enumerate(all_image_batches, 1):
-            print(f"  📄 ページ {page_num}/{len(all_image_batches)} 生成中...")
+        for page_num, images in enumerate(image_batches, 1):
+            print(f"  📄 ページ {page_num}/{len(image_batches)} 生成中...")
             
             # 画像を配置
             card_count = 0
@@ -274,7 +314,7 @@ class ProxyCardPDFGenerator:
                         y = self.page_height - (self.start_y + (row + 1) * self.card_height + row * self.card_gap)
                         
                         # 画像を一時ファイルとして保存してから配置
-                        temp_image_path = f"/tmp/temp_card_{page_num}_{card_count}.jpg"
+                        temp_image_path = f"/tmp/temp_card_{part_num}_{page_num}_{card_count}.jpg"
                         images[card_count].save(temp_image_path, "JPEG", quality=95)
                         
                         # PDFに画像を配置（完全にカード枠を埋める）
@@ -306,7 +346,7 @@ class ProxyCardPDFGenerator:
             self.add_cut_lines(c)
             
             # 最後のページ以外は新しいページを追加
-            if page_num < len(all_image_batches):
+            if page_num < len(image_batches):
                 c.showPage()
                 print(f"    ✅ ページ {page_num} 完了、次のページへ")
             else:
@@ -316,9 +356,12 @@ class ProxyCardPDFGenerator:
         c.save()
         
         file_size = os.path.getsize(pdf_path)
-        print(f"  ✅ PDF保存完了: {pdf_filename} ({file_size:,} bytes)")
+        actual_size_mb = file_size / 1024 / 1024
         
-        return [pdf_path]
+        print(f"  ✅ PDF保存完了: {os.path.basename(pdf_path)}")
+        print(f"    📊 ファイルサイズ: {actual_size_mb:.1f}MB ({file_size:,} bytes)")
+        
+        return pdf_path
     
     def add_cut_lines(self, canvas_obj):
         """カット線を追加（9枚の画像の外に延長する形で表示）"""
@@ -491,15 +534,23 @@ def main():
         print(f"✅ バッチ {batch_num} 完了")
     
     # 単一のPDFを生成（全バッチを含む）
-    print(f"\n📄 単一PDF生成中...")
+    print(f"\n📄 PDF生成開始...")
     generated_files = generator.generate_pdf(all_image_batches, output_dir)
     
     print(f"\n🎉 全処理完了!")
     print(f"📄 生成されたPDFファイル: {len(generated_files)} 個")
     
+    total_size = 0
     for pdf_file in generated_files:
         file_size = os.path.getsize(pdf_file)
-        print(f"  📄 {os.path.basename(pdf_file)} ({file_size:,} bytes, {len(batches)} ページ)")
+        total_size += file_size
+        size_mb = file_size / 1024 / 1024
+        print(f"  📄 {os.path.basename(pdf_file)}: {size_mb:.1f}MB ({file_size:,} bytes)")
+    
+    print(f"\n📊 総計:")
+    print(f"  📄 PDFファイル数: {len(generated_files)}")
+    print(f"  📄 総ページ数: {len(all_image_batches)}")
+    print(f"  📊 総サイズ: {total_size / 1024 / 1024:.1f}MB ({total_size:,} bytes)")
     
     print(f"\n📁 出力ディレクトリ: {output_dir}")
     

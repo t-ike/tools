@@ -45,7 +45,7 @@ class ProxyCardPDFGenerator:
         self.rows = 3
         
         # PDFサイズ制限設定
-        self.max_pdf_size = 30 * 1024 * 1024  # 30MB
+        self.max_pdf_size = None  # デフォルトは制限なし
         self.pages_per_split = 12  # 分割単位（ページ数）
         
         # 実際の配置確認
@@ -245,21 +245,89 @@ class ProxyCardPDFGenerator:
         
         return image
     
+    def estimate_page_size(self, page_images, quality=95):
+        """1ページの推定サイズを計算（JPEG圧縮後のサイズ合計 + オーバーヘッド）"""
+        total_size = 0
+        try:
+            for img in page_images:
+                if img:
+                    # メモリ上にJPEG保存してサイズ計測
+                    buffer = BytesIO()
+                    img.save(buffer, "JPEG", quality=quality)
+                    total_size += buffer.tell()
+            
+            # PDFオーバーヘッド（概算: 100KB + 画像サイズの20%）
+            # ReportLabのメタデータ、フォント、構造化データなどを考慮して余裕を持たせる
+            overhead = 100 * 1024 + (total_size * 0.20)
+            return total_size + overhead
+        except Exception as e:
+            print(f"⚠️  サイズ推定エラー: {e}")
+            return 2 * 1024 * 1024  # エラー時は2MBと仮定
+
     def split_batches_by_size(self, all_image_batches):
-        """画像バッチを固定ページ数で分割"""
-        total_pages = len(all_image_batches)
+        """画像バッチを分割（サイズ制限または固定ページ数）"""
         
-        print(f"\n📊 PDF分割設定:")
+        if not self.max_pdf_size:
+            # サイズ制限なし：固定ページ数で分割
+            return self._split_by_page_count(all_image_batches)
+        else:
+            # サイズ制限あり：推定サイズで分割
+            return self._split_by_file_size(all_image_batches)
+
+    def _split_by_page_count(self, all_image_batches):
+        """固定ページ数での分割"""
+        total_pages = len(all_image_batches)
+        print(f"\n📊 PDF分割設定 (ページ数固定):")
         print(f"  総ページ数: {total_pages}")
         print(f"  分割単位: {self.pages_per_split}ページ")
         
-        # バッチを分割
         split_batches = []
         for i in range(0, len(all_image_batches), self.pages_per_split):
             chunk = all_image_batches[i:i + self.pages_per_split]
             split_batches.append(chunk)
             print(f"    📋 分割 {len(split_batches)}: {len(chunk)}ページ")
         
+        return split_batches
+
+    def _split_by_file_size(self, all_image_batches):
+        """ファイルサイズ制限での分割"""
+        total_pages = len(all_image_batches)
+        limit_bytes = self.max_pdf_size
+        limit_mb = limit_bytes / (1024 * 1024)
+        
+        print(f"\n📊 PDF分割設定 (サイズ制限):")
+        print(f"  総ページ数: {total_pages}")
+        print(f"  サイズ上限: {limit_mb:.1f}MB")
+        
+        split_batches = []
+        current_batch = []
+        current_batch_size = 0
+        
+        print(f"  🔍 各ページのサイズを推定中...")
+        
+        for i, page_images in enumerate(all_image_batches):
+            # ページのサイズ推定
+            page_size = self.estimate_page_size(page_images)
+            page_size_mb = page_size / (1024 * 1024)
+            
+            # 次のページを追加すると制限を超える場合（かつ、現在のバッチが空でない場合）
+            if current_batch and (current_batch_size + page_size > limit_bytes):
+                split_batches.append(current_batch)
+                print(f"    📋 分割 {len(split_batches)}: {len(current_batch)}ページ (推定 {current_batch_size / (1024*1024):.1f}MB)")
+                
+                # 新しいバッチ開始
+                current_batch = [page_images]
+                current_batch_size = page_size
+            else:
+                # バッチに追加
+                current_batch.append(page_images)
+                current_batch_size += page_size
+        
+        # 最後のバッチを追加
+        if current_batch:
+            split_batches.append(current_batch)
+            print(f"    📋 分割 {len(split_batches)}: {len(current_batch)}ページ (推定 {current_batch_size / (1024*1024):.1f}MB)")
+            
         return split_batches
     
     def generate_pdf(self, all_image_batches, output_dir):
@@ -455,6 +523,27 @@ def main():
     else:
         print("✅ アスペクト比保持モード: 画像の縦横比を維持します")
     
+    # PDFサイズ制限の設定
+    print("\n📦 PDFのサイズ制限を設定しますか？ (デフォルト: しない)")
+    size_limit_choice = input("サイズ制限しますか？ (y/N): ").strip().lower()
+    
+    max_pdf_size = None
+    if size_limit_choice == 'y' or size_limit_choice == 'yes':
+        try:
+            limit_input = input("  制限サイズを入力してください (MB) [デフォルト: 30]: ").strip()
+            if not limit_input:
+                limit_mb = 30
+            else:
+                limit_mb = float(limit_input)
+            
+            max_pdf_size = int(limit_mb * 1024 * 1024)
+            print(f"✅ サイズ制限: {limit_mb}MB ({max_pdf_size:,} bytes)")
+        except ValueError:
+            print("⚠️  無効な入力です。デフォルトの30MBを使用します。")
+            max_pdf_size = 30 * 1024 * 1024
+    else:
+        print("✅ サイズ制限なし（ページ数で分割: 12ページごと）")
+
     # URLリストの取得方法選択
     print("\n📋 URLリストの入力方法を選択してください：")
     print("1. ファイルから読み込み")
@@ -509,6 +598,7 @@ def main():
     
     # PDF生成器を作成
     generator = ProxyCardPDFGenerator()
+    generator.max_pdf_size = max_pdf_size
     
     # URLを9個ずつのバッチに分割
     batches = [urls[i:i+9] for i in range(0, len(urls), 9)]

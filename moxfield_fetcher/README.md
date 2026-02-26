@@ -22,6 +22,7 @@ python3 fetch_deck.py <deck_code> [-o OUTPUT]
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
 | `-o`, `--output` | 出力 CSV ファイル名 | `mtg_cards.csv` |
+| `-m`, `--moxfield-print` | Moxfield で設定中のセットに日本語版があれば最優先で採用 | `False` |
 
 ### 実行例
 
@@ -31,6 +32,12 @@ python3 fetch_deck.py g29LKHreK0yB_ylkKo6iHQ
 
 # ファイル名を指定
 python3 fetch_deck.py g29LKHreK0yB_ylkKo6iHQ -o sidisi_deck.csv
+
+# Moxfield で選択中のセットを優先（日本語版がある場合）
+python3 fetch_deck.py g29LKHreK0yB_ylkKo6iHQ -m
+
+# 組み合わせ
+python3 fetch_deck.py g29LKHreK0yB_ylkKo6iHQ -m -o sidisi_deck.csv
 
 # ヘルプ
 python3 fetch_deck.py --help
@@ -68,6 +75,21 @@ python3 fetch_deck.py --help
 2. その中で**言語バリエーション数が最多**のセットを優先（大型セットほど多言語対応）
 3. 言語数が同数の場合は `released_at` が最新のセットを選ぶ
 4. 日本語版がない場合は英語版の最新を採用
+
+### 出力順序
+
+カードタイプ → CMC（マナコスト）→ 英語名 の順でソートされます。
+
+| 順序 | タイプ |
+|------|--------|
+| 1 | Planeswalker |
+| 2 | Creature（Artifact Creature 含む） |
+| 3 | Sorcery |
+| 4 | Instant |
+| 5 | Artifact |
+| 6 | Enchantment |
+| 7 | その他 |
+| 8 | Land |
 
 ### Cloudflare 対応
 

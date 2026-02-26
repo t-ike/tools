@@ -33,13 +33,37 @@ CSV_COLUMNS = [
 ]
 REQUEST_DELAY = 0.1   # Scryfall 推奨: 50-100ms
 
+# カードタイプのソート優先度（小さいほど先）
+# 複数タイプを持つカード（例: Artifact Creature）は先にヒットした方が優先される
+_TYPE_PRIORITY: dict[str, int] = {
+    "planeswalker": 0,
+    "creature":     1,
+    "sorcery":      2,
+    "instant":      3,
+    "artifact":     4,
+    "enchantment":  5,
+    "land":         7,
+}
+_OTHER_TYPE_PRIORITY = 6  # 未知のタイプは land の直前
+
+
+def get_type_priority(type_line: str) -> int:
+    """type_line 文字列からソート優先度を返す。"""
+    tl = type_line.lower()
+    for name, prio in _TYPE_PRIORITY.items():
+        if name in tl:
+            return prio
+    return _OTHER_TYPE_PRIORITY
+
 
 # ── Moxfield ────────────────────────────────────────────────────────────
 
-def fetch_deck_card_names(deck_code: str) -> list[str]:
+def fetch_deck_cards(deck_code: str) -> dict[str, str]:
     """
-    Moxfield の公開デッキから mainboard の英語カード名を取得する。
-    重複は除外する。
+    Moxfield の公開デッキから mainboard のカード情報を取得する。
+
+    Returns:
+        {card_name: moxfield_set_code} の dict（重複は除外）
     """
     url = MOXFIELD_DECK_API.format(deck_code=deck_code)
     print(f"[Moxfield] デッキ取得: {url}")
@@ -47,18 +71,19 @@ def fetch_deck_card_names(deck_code: str) -> list[str]:
     resp.raise_for_status()
     data = resp.json()
 
-    # v3 API: boards.mainboard.cards.{key}.card.name
-    names: set[str] = set()
+    # v3 API: boards.mainboard.cards.{key}.card
+    card_sets: dict[str, str] = {}
     boards = data.get("boards") or {}
     board = boards.get("mainboard") or {}
     for entry in (board.get("cards") or {}).values():
         card_obj = entry.get("card") or {}
         name = card_obj.get("name", "").strip()
-        if name:
-            names.add(name)
+        set_code = card_obj.get("set", "").strip()
+        if name and name not in card_sets:
+            card_sets[name] = set_code
 
-    print(f"[Moxfield] カード {len(names)} 枚（重複除外済み）")
-    return sorted(names)
+    print(f"[Moxfield] カード {len(card_sets)} 枚（重複除外済み）")
+    return card_sets
 
 
 # ── Scryfall ─────────────────────────────────────────────────────────────
@@ -118,11 +143,15 @@ def get_image_url_for_face(card: dict, face_index: int = 0) -> str:
     return ""
 
 
-def pick_best_print(prints: list[dict]) -> dict:
+def pick_best_print(
+    prints: list[dict],
+    mox_set_code: Optional[str] = None,
+) -> dict:
     """
     全 print の中から最適なカードを選ぶ。
 
     優先度:
+      0. mox_set_code 指定時: そのセットに日本語版があれば最優先
       1. 日本語版が存在するセットに絞る
       2. その中で言語バリエーション数が最多のセットを選ぶ
          （大型セットほど多言語対応しており、品質の高い印刷が多い）
@@ -130,6 +159,15 @@ def pick_best_print(prints: list[dict]) -> dict:
       4. 日本語なし → 英語版の中で released_at 最新を返す
     """
     from collections import defaultdict
+
+    # 0. Moxfield 選択セットの日本語版を最優先
+    if mox_set_code:
+        mox_ja = next(
+            (p for p in prints if p.get("set") == mox_set_code and p.get("lang") == "ja"),
+            None,
+        )
+        if mox_ja:
+            return mox_ja
 
     # set_code ごとにグループ化
     set_prints: dict[str, list[dict]] = defaultdict(list)
@@ -183,17 +221,27 @@ def get_card_name_ja(card: dict, face_index: int = 0) -> str:
     return card.get("name", "")
 
 
-def build_card_rows(base_card: dict, prints: list[dict]) -> list[dict]:
+def build_card_rows(
+    base_card: dict,
+    prints: list[dict],
+    mox_set_code: Optional[str] = None,
+) -> list[dict]:
     """
     CSV 行データを組み立てる。
     両面カードは表面・裏面それぞれ1行ずつ返す。
     """
-    best = pick_best_print(prints)
+    best = pick_best_print(prints, mox_set_code=mox_set_code)
     is_japanese = best.get("lang") == "ja"
     all_set_codes = "|".join(sorted({p.get("set", "") for p in prints} - {""}))
 
     faces = best.get("card_faces", [])
     is_double_faced = len(faces) >= 2 and "image_uris" not in best
+
+    # type_line は表面（index 0）の type_line を使う（両面カードも統一）
+    type_line = best.get("type_line", "")
+    if not type_line and faces:
+        type_line = faces[0].get("type_line", "")
+    type_priority = get_type_priority(type_line)
 
     base = {
         "card_name_en": base_card.get("name", ""),
@@ -202,6 +250,8 @@ def build_card_rows(base_card: dict, prints: list[dict]) -> list[dict]:
         "is_japanese": is_japanese,
         "scryfall_uri": best.get("scryfall_uri", ""),
         "all_set_codes": all_set_codes,
+        "_type_priority": type_priority,      # ソート用・CSV には出力しない
+        "_cmc": float(best.get("cmc", 0)),    # ソート用・CSV には出力しない
     }
 
     if is_double_faced:
@@ -235,12 +285,21 @@ def write_csv(rows: list[dict], output_path: str) -> None:
 
 # ── メイン ───────────────────────────────────────────────────────────────
 
-def main(deck_code: str, output_file: str = OUTPUT_FILE) -> None:
-    card_names = fetch_deck_card_names(deck_code)
+def main(
+    deck_code: str,
+    output_file: str = OUTPUT_FILE,
+    use_moxfield_print: bool = False,
+) -> None:
+    deck_cards = fetch_deck_cards(deck_code)
     rows: list[dict] = []
+    names = sorted(deck_cards.keys())
 
-    for i, name in enumerate(card_names, start=1):
-        print(f"[{i}/{len(card_names)}] 処理中: {name}")
+    if use_moxfield_print:
+        print("[INFO] Moxfield 選択セットの日本語版を最優先します")
+
+    for i, name in enumerate(names, start=1):
+        mox_set = deck_cards[name] if use_moxfield_print else None
+        print(f"[{i}/{len(names)}] 処理中: {name}" + (f" (mox_set={mox_set})" if mox_set else ""))
         try:
             base_card = fetch_base_card(name)
             if base_card is None:
@@ -255,7 +314,7 @@ def main(deck_code: str, output_file: str = OUTPUT_FILE) -> None:
             all_prints = fetch_all_prints(prints_search_uri)
             time.sleep(REQUEST_DELAY)
 
-            card_rows = build_card_rows(base_card, all_prints)
+            card_rows = build_card_rows(base_card, all_prints, mox_set_code=mox_set)
             rows.extend(card_rows)
             for row in card_rows:
                 print(
@@ -267,6 +326,12 @@ def main(deck_code: str, output_file: str = OUTPUT_FILE) -> None:
             print(f"  [ERROR] HTTP エラー ({name}): {e}")
         except Exception as e:  # noqa: BLE001
             print(f"  [ERROR] 予期しないエラー ({name}): {e}")
+
+    # カードタイプ順 → マナコスト順 → 英語名順
+    rows.sort(key=lambda r: (r["_type_priority"], r["_cmc"], r["card_name_en"]))
+    for row in rows:
+        del row["_type_priority"]
+        del row["_cmc"]
 
     write_csv(rows, output_file)
 
@@ -282,5 +347,10 @@ if __name__ == "__main__":
         metavar="FILE",
         help=f"出力 CSV ファイル名 (デフォルト: {OUTPUT_FILE})",
     )
+    parser.add_argument(
+        "-m", "--moxfield-print",
+        action="store_true",
+        help="Moxfield で設定されているセットに日本語版があれば最優先で採用する",
+    )
     args = parser.parse_args()
-    main(args.deck_code, args.output)
+    main(args.deck_code, args.output, args.moxfield_print)
